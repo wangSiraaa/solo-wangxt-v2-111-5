@@ -39,8 +39,20 @@ def test_multi_mode_blend_and_trace_fields():
 
 
 def test_wet_basis_assay_converted():
-    # AS01 粉煤灰为湿基化验单（SiO2 湿基 39.36，含水率 18%）
-    r = _blend([1, 2, 3, 4, 5], ["max_cheap"], cheap=4)
+    # AS01 粉煤灰为湿基化验单（SiO2 湿基 39.36，含水率 18%）；
+    # 显式锁定 V2026-09W，避免默认取“最新版”（AS01 现有更新的异常湿基版）。
+    as01_assay = next(v for m in c.get("/api/materials").json()
+                      if m["code"] == "AS01" for v in m["assay_versions"]
+                      if v["version"] == "V2026-09W")["id"]
+    body = {
+        "scenario_name": "api-test", "batch_t_dry": 1000,
+        "candidates": [{"material_id": i} if i != 4
+                       else {"material_id": 4, "assay_version_id": as01_assay}
+                       for i in [1, 2, 3, 4, 5]],
+        "targets": T, "modes": ["max_cheap"], "save": False,
+        "cheap_material_id": 4,
+    }
+    r = c.post("/api/blend", json=body)
     item = next(i for i in r.json()["solutions"][0]["items"]
                 if i["material_code"] == "AS01")
     sio2 = next(st for st in item["conversion_trace"]["steps"]

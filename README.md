@@ -11,7 +11,7 @@
 | 前端 | Angular 18（standalone 组件，纯 CSS 堆叠条） | 氧化物来源/配比比例展示、试算交互、方案对比、化验追溯 |
 | 后端 | FastAPI + Pydantic | REST API、干湿基换算、错误码、静态托管 |
 | 优化 | SciPy `linprog`（HiGHS） | 线性规划：成本最优 / 廉价料最大 / 率值居中 |
-| 存储 | PostgreSQL 15 | 原料、**多版化验单**、试算批次、方案、逐原料换算留痕 |
+| 存储 | PostgreSQL 15 | 原料、**多版化验单**、试算批次、方案、逐原料换算留痕、**回填账本事件流与差异快照** |
 
 ## 计算口径
 
@@ -47,6 +47,33 @@
 - **求解失败**：对全部不等式做“最小违约松弛”模型，列出仍被突破的冲突约束、
   限值、最小违约解达到值与缺口；最低掺量之和 >100% 另有算术预检 `MIN_SHARE_OVERFLOW`。
 
+## 离线试验回填账本（只追加事件溯源）
+
+研发试验完成后，**实际到料与化验结果只与已保存方案对账，绝不回改计划**：
+
+- 从一个**已保存且可行**的方案创建待对账批次（`recon_batch`），计划侧整包
+  快照冻结（逐原料干/湿质量、水量、成本、化验版、湿→干换算依据）；
+- 实际到料（`receive`）、冲销（`reversal`，数量取反）、更正（`correction`，
+  反向 + 正向新事件）都是 **recon_event 只追加事件**，原事件永不删除；
+- 每条事件必须显式引用 **计划原料项 `plan_item_id`** 与 **明确选择的化验版
+  `assay_version_id`**（登记时整单快照），禁止在历史计划上悄悄改用“当前最新化验单”；
+- 累计 = `Σ sign × 数量`（加法可交换）→ **乱序到达得到同一累计结果**；
+  `(batch_id, client_event_id)` 唯一约束保证**重复回传幂等**；
+- 系统按累计**干/湿质量、水量、成本**与逐原料/合计差异，以及质量守恒合成后的
+  **率值 SM/IM/KH 与有害组分（Cl、碱当量……）**计算计划/实际差异；
+- 状态是事件流的纯投影：未闭合 `pending` → 数量闭合且指标在窗 `reconciled`，
+  闭合但 KH/有害越界或缺测/零分母 → `abnormal`；
+- 缺测化验（`MISSING_ASSAY`）或率值零分母（`ZERO_DENOMINATOR`）**不得关闭批次**；
+- 事件、状态、差异快照均持久化；重启后从事件重放，累计结果一致。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/api/recon/batches` | 从已保存 run+solution 创建待对账批次（计划快照冻结） |
+| GET | `/api/recon/batches` `/api/recon/batches/{id}` | 批次列表 / 详情（计划 + 差异快照 + 事件流水） |
+| POST | `/api/recon/batches/{id}/events` | 追加实际到料（幂等键 + 显式化验版） |
+| POST | `/api/recon/batches/{id}/reverse` | 冲销（反向事件）或更正（反向+新正向），留审计痕迹 |
+| POST | `/api/recon/batches/{id}/close` | 关闭对账；未闭合/缺测/零分母/越界返回 422 与原因 |
+
 ## 目录
 
 ```
@@ -59,7 +86,7 @@ backend/
     crud.py        持久化与历史回看
     schemas.py     Pydantic 模型
     seed.py        虚构演示数据（含湿基化验单、缺测/零分母演示料）
-  tests/           21 个 pytest（换算/守恒/报错/求解/API/追溯）
+  tests/           32 个 pytest（换算/守恒/报错/求解/API/追溯/回填账本）
   scripts/         pg_start / pg_stop / seed / serve
 frontend/
   src/app/
@@ -102,8 +129,10 @@ Python 依赖：`pip install -r backend/requirements.txt`（本机装于用户 s
    - 碱当量上限收紧（0.40%）→ 有害组分冲突与突破量；
    - 5000 t 大批量 → 湿基可用量与 KH 同时冲突；
 3. **手工配比**：一键装入“100% 零铁石英（IM 分母为零）”和“缺测矿样（MISSING_ASSAY）”；
-4. **历史追溯**：每个方案可追到批次号、原始化验版本/单号、原始 wet/dry 报送值、
-   逐组分湿→干公式、干/湿料质量、水量与成本算式。
+4. **历史追溯 / 回填对账**：每个方案可追到批次号、原始化验版本/单号、原始 wet/dry 报送值、
+   逐组分湿→干公式、干/湿料质量、水量与成本算式；可从可行方案一键创建**回填批次**，
+   在“回填账本（只追加）”页逐原料登记到料（显式选化验版）、冲销/更正，
+   查看逐原料计划/实际/差异、率值与有害组分判定及事件流水。
 
 ## API 摘要
 
@@ -113,6 +142,7 @@ Python 依赖：`pip install -r backend/requirements.txt`（本机装于用户 s
 | POST | `/api/blend` | 试算（多模式、约束、可入库） |
 | POST | `/api/evaluate` | 手工份额合成 + 率值（错误演示） |
 | GET | `/api/runs` `/api/runs/{id}` | 历史批次与完整追溯 |
+| POST/GET | `/api/recon/...` | 离线试验回填账本（见上节） |
 | GET | `/api/health` | 健康检查（含 fictional-boundary 标记） |
 
 错误响应体：`{ "error_code": "MISSING_ASSAY|ZERO_DENOMINATOR|...", "message": ..., "details": ... }`。
@@ -121,5 +151,5 @@ Python 依赖：`pip install -r backend/requirements.txt`（本机装于用户 s
 
 ```bash
 cd backend && python3 -m pytest tests/ -q
-# 21 passed
+# 32 passed
 ```

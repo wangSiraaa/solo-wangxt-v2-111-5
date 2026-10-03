@@ -12,13 +12,17 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
-from . import chemistry, crud, optimizer
+from . import chemistry, crud, optimizer, recon
 from .database import Base, engine, get_db
 from .schemas import (
     BlendRequest,
     BlendResponse,
     EvaluateRequest,
     MaterialOut,
+    ReconCloseRequest,
+    ReconCreateRequest,
+    ReconEventRequest,
+    ReconReverseRequest,
     SolutionItem,
     SolutionOut,
 )
@@ -167,6 +171,66 @@ def run_detail(run_id: int, db: Session = Depends(get_db)):
     if detail is None:
         raise HTTPException(404, "试算记录不存在。")
     return detail
+
+
+# ---- 离线试验回填账本（事件溯源 / 只追加 / 审计留痕） ----
+@app.post("/api/recon/batches")
+def create_recon_batch(req: ReconCreateRequest, db: Session = Depends(get_db)):
+    """从已保存方案创建待对账批次；计划侧整包快照冻结，之后不改。"""
+    batch = recon.create_batch(db, req)
+    db.commit()
+    db.refresh(batch)
+    return recon.batch_detail(db, batch.id)
+
+
+@app.get("/api/recon/batches")
+def list_recon_batches(limit: int = 50, db: Session = Depends(get_db)):
+    return recon.list_batches(db, limit)
+
+
+@app.get("/api/recon/batches/{batch_id}")
+def recon_batch_detail(batch_id: int, db: Session = Depends(get_db)):
+    detail = recon.batch_detail(db, batch_id)
+    if detail is None:
+        raise HTTPException(404, "回填批次不存在。")
+    return detail
+
+
+@app.post("/api/recon/batches/{batch_id}/events")
+def append_recon_event(batch_id: int, req: ReconEventRequest,
+                       db: Session = Depends(get_db)):
+    """登记实际到料（只追加）。同 client_event_id 重放幂等，乱序不影响累计。"""
+    batch = recon._load_batch(db, batch_id)
+    ev = recon.append_receive(db, batch, req)
+    db.commit()
+    db.refresh(batch)
+    return {"event": recon._event_out(ev),
+            "status": batch.status,
+            "diff": batch.diff_snapshot}
+
+
+@app.post("/api/recon/batches/{batch_id}/reverse")
+def reverse_recon_event(batch_id: int, req: ReconReverseRequest,
+                        db: Session = Depends(get_db)):
+    """冲销（反向事件留痕）或更正（反向 + 正向新事件）。原事件不删除。"""
+    batch = recon._load_batch(db, batch_id)
+    evs = recon.reverse_event(db, batch, req)
+    db.commit()
+    db.refresh(batch)
+    return {"events": [recon._event_out(e) for e in evs],
+            "status": batch.status,
+            "diff": batch.diff_snapshot}
+
+
+@app.post("/api/recon/batches/{batch_id}/close")
+def close_recon_batch(batch_id: int, req: ReconCloseRequest,
+                      db: Session = Depends(get_db)):
+    """请求关闭批次；缺测/零分母/未闭合/越界均以 422 明确拒绝并说明。"""
+    batch = recon._load_batch(db, batch_id)
+    snap = recon.close_batch(db, batch, force=req.force)
+    db.commit()
+    db.refresh(batch)
+    return {"status": batch.status, "diff": snap}
 
 
 # ---- 生产构建后的静态前端（ng build 产物） ----

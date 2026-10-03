@@ -134,6 +134,7 @@ def get_run_detail(db: Session, run_id: int):
                 },
             })
         out["solutions"].append({
+            "id": s.id,
             "mode": s.mode,
             "success": s.success,
             "total_cost": s.total_cost,

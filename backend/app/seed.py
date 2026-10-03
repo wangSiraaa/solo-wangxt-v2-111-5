@@ -63,14 +63,25 @@ MATERIALS = [
         moisture_pct=18.0, cost_per_t_wet=18.0, availability_t_wet=600.0,
         min_share_pct=0.0, is_active=True,
         note="廉价铝质校正；化验单按收到基(湿基)报送，需先做湿→干换算。",
-        versions=[dict(version="V2026-09W", lab_report_no="LAB-2609-130W",
-                       assayed_at=datetime(2026, 9, 8), basis="wet",
-                       # 湿基值 = 干基值 × (1-0.18)
-                       composition={"CaO": 3.69, "SiO2": 39.36, "Al2O3": 24.6,
-                                    "Fe2O3": 5.33, "MgO": 1.23, "SO3": 0.656,
-                                    "K2O": 1.476, "Na2O": 0.738, "Cl": 0.0123,
-                                    "LOI": 4.9077},
-                       measured_oxides=ALL_MAJOR)]),
+        versions=[
+            dict(version="V2026-09W", lab_report_no="LAB-2609-130W",
+                 assayed_at=datetime(2026, 9, 8), basis="wet",
+                 # 湿基值 = 干基值 × (1-0.18)
+                 composition={"CaO": 3.69, "SiO2": 39.36, "Al2O3": 24.6,
+                              "Fe2O3": 5.33, "MgO": 1.23, "SO3": 0.656,
+                              "K2O": 1.476, "Na2O": 0.738, "Cl": 0.0123,
+                              "LOI": 4.9077},
+                 measured_oxides=ALL_MAJOR),
+            dict(version="V2026-10W-ALT", lab_report_no="LAB-2610-017W",
+                 assayed_at=datetime(2026, 10, 1), basis="wet",
+                 # 虚构来煤波动：CaO 明显偏低、Cl 偏高——回填时选此版会使
+                 # 实际 KH 跌破计划窗口且 Cl 越限（演示“异常批次”，计划不动）。
+                 composition={"CaO": 2.05, "SiO2": 38.54, "Al2O3": 25.42,
+                              "Fe2O3": 5.74, "MgO": 1.31, "SO3": 0.738,
+                              "K2O": 1.558, "Na2O": 0.779, "Cl": 0.30,
+                              "LOI": 5.4076},
+                 measured_oxides=ALL_MAJOR),
+        ]),
     dict(
         code="IR01", name="铁粉(虚构副产)", category="铁质校正",
         moisture_pct=8.0, cost_per_t_wet=320.0, availability_t_wet=200.0,
@@ -119,12 +130,41 @@ MATERIALS = [
 ]
 
 
+def _migrate(db) -> None:
+    """对已播种库做幂等补齐（不修改既有数据/计划）。"""
+    from sqlalchemy import select as _sel
+
+    as01 = db.scalars(_sel(Material).where(Material.code == "AS01")).first()
+    if as01 is None:
+        return
+    exists = db.scalars(
+        _sel(AssayVersion).where(
+            AssayVersion.material_id == as01.id,
+            AssayVersion.version == "V2026-10W-ALT",
+        )
+    ).first()
+    if exists is None:
+        db.add(AssayVersion(
+            material_id=as01.id,
+            version="V2026-10W-ALT", lab_report_no="LAB-2610-017W",
+            assayed_at=datetime(2026, 10, 1), basis="wet",
+            composition={"CaO": 2.05, "SiO2": 38.54, "Al2O3": 25.42,
+                         "Fe2O3": 5.74, "MgO": 1.31, "SO3": 0.738,
+                         "K2O": 1.558, "Na2O": 0.779, "Cl": 0.30,
+                         "LOI": 5.4076},
+            measured_oxides=ALL_MAJOR,
+        ))
+        db.commit()
+        print("migrate: 已补 AS01 湿基异常化验单 V2026-10W-ALT。")
+
+
 def seed():
     Base.metadata.create_all(bind=engine)
     db = SessionLocal()
     try:
         if db.scalars(select(Material)).first():
-            print("seed: 数据已存在，跳过。")
+            print("seed: 数据已存在，执行幂等迁移检查。")
+            _migrate(db)
             return
         for spec in MATERIALS:
             versions = spec.pop("versions")
