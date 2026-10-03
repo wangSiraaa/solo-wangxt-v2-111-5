@@ -117,8 +117,11 @@ def get_run_detail(db: Session, run_id: int):
             mat = db.get(models.Material, it.material_id)
             ass = db.get(models.AssayVersion, it.assay_version_id)
             items.append({
+                "blend_item_id": it.id,
+                "material_id": it.material_id,
                 "material_code": mat.code,
                 "material_name": mat.name,
+                "assay_version_id": ass.id,
                 "assay_version": ass.version,
                 "lab_report_no": ass.lab_report_no,
                 "share_pct_dry": it.share_pct_dry,
@@ -134,6 +137,7 @@ def get_run_detail(db: Session, run_id: int):
                 },
             })
         out["solutions"].append({
+            "id": s.id,
             "mode": s.mode,
             "success": s.success,
             "total_cost": s.total_cost,

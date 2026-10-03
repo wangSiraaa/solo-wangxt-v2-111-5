@@ -12,13 +12,16 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
-from . import chemistry, crud, optimizer
+from . import chemistry, crud, optimizer, recon
 from .database import Base, engine, get_db
 from .schemas import (
     BlendRequest,
     BlendResponse,
     EvaluateRequest,
     MaterialOut,
+    ReconBatchCreate,
+    ReconEventAppend,
+    ReconReverseRequest,
     SolutionItem,
     SolutionOut,
 )
@@ -167,6 +170,64 @@ def run_detail(run_id: int, db: Session = Depends(get_db)):
     if detail is None:
         raise HTTPException(404, "试算记录不存在。")
     return detail
+
+
+# ---------------- 对账批次回填账本（只追加事件） ----------------
+
+@app.post("/api/recon-batches", status_code=201)
+def recon_create(req: ReconBatchCreate, db: Session = Depends(get_db)):
+    """从已保存方案创建待对账批次；计划快照创建时冻结，之后不可修改。"""
+    batch = recon.create_batch(db, req.run_id, req.solution_id, req.note)
+    return recon.serialize_batch(db, batch)
+
+
+@app.get("/api/recon-batches")
+def recon_list(run_id: int | None = None, limit: int = 100,
+               db: Session = Depends(get_db)):
+    return recon.list_batches(db, run_id=run_id, limit=limit)
+
+
+@app.get("/api/recon-batches/{batch_id}")
+def recon_detail(batch_id: int, db: Session = Depends(get_db)):
+    """批次详情：计划/实际/差异快照 + 全部事件；状态由事件流重算。"""
+    try:
+        return recon.get_batch_detail(db, batch_id)
+    except chemistry.BlendError as e:
+        if e.code == "BATCH_NOT_FOUND":
+            raise HTTPException(404, e.message)
+        raise
+
+
+@app.post("/api/recon-batches/{batch_id}/events", status_code=201)
+def recon_append(batch_id: int, req: ReconEventAppend,
+                 db: Session = Depends(get_db)):
+    """追加到料/更正事件；同一 event_id 重复回传幂等，只计一次。"""
+    ev, replayed = recon.append_event(db, batch_id, req)
+    batch = recon._get_batch(db, batch_id)
+    return {
+        "replayed": replayed,
+        "event_id": ev.event_id,
+        "seq": ev.seq,
+        "status": batch.status,
+        "state": batch.state_snapshot,
+    }
+
+
+@app.post("/api/recon-batches/{batch_id}/events/{event_pk}/reverse",
+          status_code=201)
+def recon_reverse(batch_id: int, event_pk: int, req: ReconReverseRequest,
+                  db: Session = Depends(get_db)):
+    """冲销已登记到料：追加全额反向事件留审计痕迹，原事件不修改。"""
+    ev, replayed = recon.reverse_event(
+        db, batch_id, event_pk, req.event_id, req.note)
+    batch = recon._get_batch(db, batch_id)
+    return {
+        "replayed": replayed,
+        "event_id": ev.event_id,
+        "seq": ev.seq,
+        "status": batch.status,
+        "state": batch.state_snapshot,
+    }
 
 
 # ---- 生产构建后的静态前端（ng build 产物） ----

@@ -46,6 +46,8 @@
           <span class="small mono" *ngIf="s.success">
             {{ s.total_cost }} 元 · SM {{ ind(s,'SM') }} IM {{ ind(s,'IM') }}
             KH {{ ind(s,'KH') }}</span>
+          <button *ngIf="s.success" (click)="createBatch(s.id)">
+            创建对账批次</button>
         </div>
 
         <div class="callout err" *ngIf="!s.success && s.diagnostic">
@@ -94,7 +96,252 @@
           </tbody>
         </table>
       </div>
+
+      <!-- 该试算名下的对账批次 -->
+      <div class="panel" style="margin-bottom:10px">
+        <h3>对账批次（回填账本）</h3>
+        <table *ngIf="batches.length">
+          <thead><tr><th>批次号</th><th>状态</th><th class="num">事件数</th><th>时间</th><th></th></tr></thead>
+          <tbody>
+            <tr *ngFor="let b of batches"
+                [style.background]="batch?.id === b.id ? 'var(--brand-soft)' : ''">
+              <td class="mono small">{{ b.batch_code }}</td>
+              <td><span [class]="'badge ' + (b.status === 'reconciled' ? 'ok' : b.status === 'exception' ? 'err' : 'warn')">
+                {{ statusLabel(b.status) }}</span></td>
+              <td class="num">{{ b.event_count }}</td>
+              <td class="small muted">{{ b.created_at }}</td>
+              <td><button class="ghost" (click)="openBatch(b.id)">打开</button></td>
+            </tr>
+          </tbody>
+        </table>
+        <p class="small muted" *ngIf="!batches.length">
+          尚无对账批次——点击可行方案右侧“创建对账批次”，从已保存方案冻结计划快照。</p>
+      </div>
     </div>
     <div class="muted small" *ngIf="!detail">点击“回看”查看完整追溯。</div>
   </div>
+</div>
+
+<!-- ================= 对账批次详情：逐原料 计划/实际/差异 ================= -->
+<div class="panel" *ngIf="batch" style="margin-top:14px">
+  <div class="row">
+    <h2>⑤ 对账批次 {{ batch.batch_code }}
+      <span [class]="'badge ' + (batch.status === 'reconciled' ? 'ok' : batch.status === 'exception' ? 'err' : 'warn')"
+            style="font-size:12px;vertical-align:middle">
+        {{ statusLabel(batch.status) }}</span>
+    </h2>
+    <span class="spacer"></span>
+    <span class="small muted">事件 {{ batch.state.event_count }} 条 · {{ batch.created_at }}</span>
+    <button class="ghost" (click)="openBatch(batch.id)">刷新</button>
+  </div>
+  <div class="small muted" style="margin-bottom:8px">
+    来源方案 {{ batch.plan.run_code }} / {{ batch.plan.mode }} ·
+    批量 {{ batch.plan.batch_t_dry }} t 干生料 ·
+    目标 SM[{{ batch.plan.targets.SM.min }},{{ batch.plan.targets.SM.max }}]
+    IM[{{ batch.plan.targets.IM.min }},{{ batch.plan.targets.IM.max }}]
+    KH[{{ batch.plan.targets.KH.min }},{{ batch.plan.targets.KH.max }}]
+    <span *ngIf="hasHazardLimits()">
+      · 有害组分上限 {{ batch.plan.hazard_limits_pct | json }}</span>
+    · 计划快照已冻结，回填不修改历史方案
+  </div>
+
+  <div class="callout err" *ngIf="batch.state.violations.length && batch.state.violations_evaluated">
+    <strong>越界（数量已闭合，判定为异常）：</strong>
+    <div class="small" *ngFor="let v of batch.state.violations">· {{ v.message }}</div>
+  </div>
+  <div class="callout warn" *ngIf="batch.state.violations.length && !batch.state.violations_evaluated">
+    <strong>预警（数量未闭合，暂不计入状态）：</strong>
+    <div class="small" *ngFor="let v of batch.state.violations">· {{ v.message }}</div>
+  </div>
+  <div class="callout err" *ngIf="batch.state.chemistry.calc_errors?.length">
+    <strong>计算错误（不允许对账关闭）：</strong>
+    <div class="small" *ngFor="let e of batch.state.chemistry.calc_errors">
+      · [{{ e.code }}] {{ e.message }}</div>
+  </div>
+  <div class="callout err" *ngIf="err">{{ err }}</div>
+
+  <!-- 汇总 + 率值/有害组分对照 -->
+  <div class="grid2" style="margin-bottom:10px">
+    <table>
+      <thead><tr><th>汇总</th><th class="num">干t</th><th class="num">湿t</th>
+        <th class="num">水t</th><th class="num">成本(元)</th></tr></thead>
+      <tbody>
+        <tr><td>计划</td>
+          <td class="num">{{ num(batch.state.totals.plan.mass_t_dry) }}</td>
+          <td class="num">{{ num(batch.state.totals.plan.mass_t_wet) }}</td>
+          <td class="num">{{ num(batch.state.totals.plan.water_t) }}</td>
+          <td class="num">{{ num(batch.state.totals.plan.cost) }}</td></tr>
+        <tr><td>实际累计</td>
+          <td class="num">{{ num(batch.state.totals.actual.mass_t_dry) }}</td>
+          <td class="num">{{ num(batch.state.totals.actual.mass_t_wet) }}</td>
+          <td class="num">{{ num(batch.state.totals.actual.water_t) }}</td>
+          <td class="num">{{ num(batch.state.totals.actual.cost) }}</td></tr>
+        <tr><td>差异</td>
+          <td class="num" [style.color]="batch.state.totals.diff.mass_t_dry ? 'var(--err)' : 'var(--ok)'">
+            {{ num(batch.state.totals.diff.mass_t_dry, 3) }}</td>
+          <td class="num">{{ num(batch.state.totals.diff.mass_t_wet, 3) }}</td>
+          <td class="num">{{ num(batch.state.totals.diff.water_t, 3) }}</td>
+          <td class="num">{{ num(batch.state.totals.diff.cost) }}</td></tr>
+      </tbody>
+    </table>
+
+    <table>
+      <thead><tr><th>指标</th><th class="num">计划</th><th class="num">实际</th><th class="num">差异</th></tr></thead>
+      <tbody>
+        <tr *ngFor="let k of ['SM','IM','KH']">
+          <td>{{ k }}</td>
+          <td class="num">{{ num(batch.state.chemistry.plan_indicators?.[k], 3) }}</td>
+          <td class="num">{{ num(batch.state.chemistry.actual_indicators?.[k], 3) }}</td>
+          <td class="num">{{ num(batch.state.chemistry.indicator_diff?.[k], 3) }}</td>
+        </tr>
+        <tr *ngFor="let k of ['Cl','alkali_eq','MgO','SO3']">
+          <td class="small">{{ k === 'alkali_eq' ? '碱当量' : k }}
+            <span class="muted small" *ngIf="batch.plan.hazard_limits_pct[k] != null">
+              ≤{{ batch.plan.hazard_limits_pct[k] }}</span></td>
+          <td class="num">{{ num(batch.state.chemistry.plan_hazards?.[k], 4) }}</td>
+          <td class="num"
+              [style.color]="batch.plan.hazard_limits_pct[k] != null && batch.state.chemistry.actual_hazards?.[k] > batch.plan.hazard_limits_pct[k] ? 'var(--err)' : ''">
+            {{ num(batch.state.chemistry.actual_hazards?.[k], 4) }}</td>
+          <td class="num small muted">
+            {{ batch.state.chemistry.actual_hazards?.[k] != null && batch.state.chemistry.plan_hazards?.[k] != null
+               ? num(batch.state.chemistry.actual_hazards[k] - batch.state.chemistry.plan_hazards[k], 4) : '—' }}</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- 逐原料 计划/实际/差异 + 原始换算依据 -->
+  <h3>逐原料对账（计划 / 实际 / 差异）与原始换算依据</h3>
+  <table>
+    <thead>
+      <tr><th>原料</th><th>计划化验单</th>
+        <th class="num">计划 干t/湿t/水t/元</th>
+        <th class="num">实际 干t/湿t/水t/元</th>
+        <th class="num">差异 干t/湿t/水t/元</th>
+        <th>闭合</th><th>原始换算依据</th></tr>
+    </thead>
+    <tbody>
+      <tr *ngFor="let it of batch.state.items">
+        <td class="small">{{ it.material_code }} {{ it.material_name }}</td>
+        <td class="small mono">
+          {{ planItem(it.blend_item_id)?.assay_version }}<br/>
+          {{ planItem(it.blend_item_id)?.lab_report_no }}
+          <span [class]="'badge ' + (planItem(it.blend_item_id)?.basis === 'wet' ? 'wet' : 'dry')">
+            {{ planItem(it.blend_item_id)?.basis }}</span>
+        </td>
+        <td class="num small">{{ num(it.plan.mass_t_dry) }} / {{ num(it.plan.mass_t_wet) }} /
+          {{ num(it.plan.water_t) }} / {{ num(it.plan.cost, 0) }}</td>
+        <td class="num small">{{ num(it.actual.mass_t_dry) }} / {{ num(it.actual.mass_t_wet) }} /
+          {{ num(it.actual.water_t) }} / {{ num(it.actual.cost, 0) }}</td>
+        <td class="num small"
+            [style.color]="it.closed ? 'var(--ok)' : 'var(--err)'">
+          {{ num(it.diff.mass_t_dry, 3) }} / {{ num(it.diff.mass_t_wet, 3) }} /
+          {{ num(it.diff.water_t, 3) }} / {{ num(it.diff.cost, 0) }}</td>
+        <td><span [class]="'badge ' + (it.closed ? 'ok' : 'warn')">
+          {{ it.closed ? '已闭合' : '未闭合' }}</span></td>
+        <td>
+          <details class="trace" *ngIf="planItem(it.blend_item_id) as p">
+            <summary>计划换算留痕（{{ p.basis }}，系数 {{ p.conversion_trace?.dry_factor }}）</summary>
+            <div class="small">
+              <div style="margin:4px 0">
+                含水率 {{ p.moisture_pct }}% · 计划干基成分：
+                <span class="mono">{{ p.composition_dry | json }}</span>
+              </div>
+              <table>
+                <tr *ngFor="let st of p.conversion_trace?.steps">
+                  <td>{{ st.component }}</td>
+                  <td class="num">{{ st.value_in }} {{ st.basis_in }}</td>
+                  <td class="mono" style="font-size:11px">{{ st.formula }}</td>
+                  <td class="num">{{ st.value_out }} {{ st.basis_out }}</td>
+                </tr>
+              </table>
+            </div>
+          </details>
+        </td>
+      </tr>
+    </tbody>
+  </table>
+
+  <!-- 追加到料 / 更正 -->
+  <h3 style="margin-top:14px">
+    {{ correctionTarget ? '更正事件（反向抵销 + 新值入账）' : '追加到料事件' }}
+  </h3>
+  <div class="callout info" *ngIf="correctionTarget">
+    正在更正事件 <span class="mono">{{ correctionTarget.event_id }}</span>：
+    系统将先全额抵销原事件，再以新数量/新化验版入账，原事件保留可审计。
+    <button class="ghost" (click)="resetForm()">取消更正</button>
+  </div>
+  <div class="row" style="margin-bottom:6px">
+    <label class="small">计划原料项
+      <select [(ngModel)]="form.blend_item_id" (ngModelChange)="onItemChange()">
+        <option [ngValue]="null" disabled>选择…</option>
+        <option *ngFor="let p of batch.plan.items" [ngValue]="p.blend_item_id">
+          {{ p.material_code }} {{ p.material_name }}（计划湿基 {{ num(p.mass_t_wet) }}t）
+        </option>
+      </select></label>
+    <label class="small">化验版本（必须显式选择）
+      <select [(ngModel)]="form.assay_version_id">
+        <option [ngValue]="null" disabled>选择…</option>
+        <option *ngFor="let a of assayOptions()" [ngValue]="a.id">{{ a.label }}</option>
+      </select></label>
+    <label class="small">湿基到料 t
+      <input type="number" [(ngModel)]="form.mass_t_wet" min="0" step="0.0001"/></label>
+    <label class="small">备注
+      <input type="text" class="wide" [(ngModel)]="form.note" placeholder="可选"/></label>
+  </div>
+  <div class="row">
+    <span class="small muted">幂等键 <span class="mono">{{ form.event_id }}</span>
+      （重复提交同一键只入账一次）</span>
+    <button class="ghost" (click)="form.event_id = newEventId()">换键</button>
+    <span class="spacer"></span>
+    <button (click)="submitEvent()">
+      {{ correctionTarget ? '提交更正' : '提交到料' }}</button>
+  </div>
+
+  <!-- 事件流（只追加账本） -->
+  <h3 style="margin-top:14px">事件流（只追加 · 乱序/重发安全）</h3>
+  <table>
+    <thead>
+      <tr><th class="num">#</th><th>类型</th><th>原料</th><th>化验单（实际采用）</th>
+        <th class="num">湿t</th><th class="num">净贡献 干t/水t/元</th>
+        <th>换算依据</th><th>关联</th><th></th></tr>
+    </thead>
+    <tbody>
+      <tr *ngFor="let e of batch.events">
+        <td class="num small">{{ e.seq }}</td>
+        <td><span [class]="'badge ' + (e.kind === 'receipt' ? 'ok' : e.kind === 'correction' ? 'warn' : 'err')">
+          {{ kindLabel(e.kind) }}</span></td>
+        <td class="small">{{ planItem(e.blend_item_id)?.material_code }}</td>
+        <td class="small mono">{{ e.assay_snapshot.assay_version }}<br/>
+          {{ e.assay_snapshot.lab_report_no }}
+          <span [class]="'badge ' + (e.assay_snapshot.basis === 'wet' ? 'wet' : 'dry')">
+            {{ e.assay_snapshot.basis }}</span></td>
+        <td class="num">{{ num(e.mass_t_wet) }}</td>
+        <td class="num small"
+            [style.color]="e.delta.mass_t_dry < 0 ? 'var(--err)' : ''">
+          {{ num(e.delta.mass_t_dry, 3) }} / {{ num(e.delta.water_t, 3) }} /
+          {{ num(e.delta.cost, 0) }}</td>
+        <td>
+          <details class="trace">
+            <summary>w={{ e.assay_snapshot.moisture_pct }}% · 系数 {{ e.assay_snapshot.dry_factor }}</summary>
+            <div class="small">
+              <div class="mono" style="margin:4px 0">{{ e.assay_snapshot.formula }}</div>
+              <div>原始报送：<span class="mono">{{ e.assay_snapshot.composition_raw | json }}</span></div>
+              <div>换算干基：<span class="mono">{{ e.assay_snapshot.composition_dry | json }}</span></div>
+            </div>
+          </details>
+        </td>
+        <td class="small">
+          <span *ngIf="e.reversed_by_event_id" class="mono muted">
+            已被 {{ e.reversed_by_event_id }} 抵销</span>
+          <span *ngIf="e.note" class="muted"> {{ e.note }}</span>
+        </td>
+        <td>
+          <button class="ghost" *ngIf="reversible(e)" (click)="reverse(e)">冲销</button>
+          <button class="ghost" *ngIf="reversible(e)" (click)="startCorrection(e)">更正</button>
+        </td>
+      </tr>
+    </tbody>
+  </table>
+  <p class="small muted" *ngIf="!batch.events.length">尚无事件——从上方表单追加第一笔到料。</p>
 </div>

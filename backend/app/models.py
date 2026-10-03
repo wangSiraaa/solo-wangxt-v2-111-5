@@ -1,7 +1,11 @@
-"""SQLAlchemy 模型：原料、化验版本、试算方案。
+"""SQLAlchemy 模型：原料、化验版本、试算方案、对账批次账本。
 
 化验成分按版本保存（assay_version），方案结果通过 blend_item.assay_version_id
 与 assay_composition 回指具体化验单，保证结果可追溯到原始化验版与换算过程。
+
+对账批次（recon_batch）从已保存方案冻结计划快照；实际到料/冲销/更正
+全部作为只追加事件（recon_event）入账，批次状态与差异快照由事件流重算，
+历史计划行永不被回填修改。
 """
 from datetime import datetime
 
@@ -127,3 +131,73 @@ class BlendItem(Base):
     assay_composition_snapshot: Mapped[dict] = mapped_column(JSON)  # 原始化验单快照
 
     run: Mapped["BlendRun"] = relationship(back_populates="items")
+
+
+class ReconBatch(Base):
+    """离线试验批次回填账本（从已保存方案冻结计划快照）。
+
+    status 由事件流重算得出：
+      pending    待对账（数量未闭合，且无越界/计算错误）
+      reconciled 已对账（逐原料干基数量闭合，且率值/有害组分均在窗口内）
+      exception  异常（实际率值越出目标窗口、有害组分超限或零分母等）
+    plan_snapshot 创建后不再修改；state_snapshot 为最新累计与差异快照。
+    """
+
+    __tablename__ = "recon_batch"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    batch_code: Mapped[str] = mapped_column(String(64), unique=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("blend_run.id"))
+    solution_id: Mapped[int] = mapped_column(ForeignKey("blend_solution.id"))
+    status: Mapped[str] = mapped_column(String(16), default="pending")
+    plan_snapshot: Mapped[dict] = mapped_column(JSON)   # 冻结的计划（含计划化验版）
+    state_snapshot: Mapped[dict] = mapped_column(JSON)  # 最新累计/差异快照
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+    events: Mapped[list["ReconEvent"]] = relationship(
+        back_populates="batch", cascade="all, delete-orphan",
+        order_by="ReconEvent.seq",
+    )
+
+
+class ReconEvent(Base):
+    """只追加账本事件：到料(receipt)/冲销(reversal)/更正(correction)。
+
+    - event_id 为客户端幂等键，(batch_id, event_id) 唯一：重复回传只计一次；
+    - 每条事件必须显式引用计划原料项 blend_item_id 与化验版 assay_version_id，
+      绝不回退到原料“当前最新”化验单；
+    - reversal 全额抵销被引用事件的净贡献；correction 抵销被引用事件并
+      以新数量/新化验版重新入账；被抵销的事件行本身永不修改；
+    - delta 为该事件对累计量的净贡献（带符号），累计 = Σ delta，
+      与事件到达顺序无关，重启后按事件流重算结果一致。
+    """
+
+    __tablename__ = "recon_event"
+    __table_args__ = (
+        UniqueConstraint("batch_id", "event_id", name="uq_recon_event_client_key"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    batch_id: Mapped[int] = mapped_column(ForeignKey("recon_batch.id"))
+    event_id: Mapped[str] = mapped_column(String(64))  # 客户端幂等键
+    seq: Mapped[int] = mapped_column(Integer)          # 批次内到达序号（仅展示排序用）
+    kind: Mapped[str] = mapped_column(String(16))      # receipt / reversal / correction
+    blend_item_id: Mapped[int] = mapped_column(ForeignKey("blend_item.id"))
+    material_id: Mapped[int] = mapped_column(ForeignKey("material.id"))
+    assay_version_id: Mapped[int] = mapped_column(ForeignKey("assay_version.id"))
+    mass_t_wet: Mapped[float] = mapped_column(Float)   # 本次到料湿基吨（reversal 为被冲销量）
+    moisture_pct: Mapped[float] = mapped_column(Float)
+    cost_per_t_wet: Mapped[float] = mapped_column(Float)
+    reverses_event_id: Mapped[int | None] = mapped_column(
+        ForeignKey("recon_event.id"), nullable=True
+    )
+    assay_snapshot: Mapped[dict] = mapped_column(JSON)  # 化验版/单号/基准/换算系数留痕
+    delta: Mapped[dict] = mapped_column(JSON)           # 净贡献：干湿质量/水/成本/组分吨
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    batch: Mapped["ReconBatch"] = relationship(back_populates="events")

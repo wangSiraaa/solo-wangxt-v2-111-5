@@ -114,3 +114,83 @@ export interface RunDetail {
   status: string; created_at: string;
   solutions: any[];
 }
+
+// ---------------- 对账批次回填账本 ----------------
+
+export type ReconStatus = 'pending' | 'reconciled' | 'exception';
+
+export interface ReconBatchSummary {
+  id: number; batch_code: string; run_id: number; solution_id: number;
+  status: ReconStatus; event_count: number;
+  scenario_name?: string; created_at: string;
+}
+
+export interface ReconPlanItem {
+  blend_item_id: number; material_id: number;
+  material_code: string; material_name: string;
+  moisture_pct: number; cost_per_t_wet: number;
+  assay_version_id: number; assay_version: string;
+  lab_report_no: string; basis: string;
+  share_pct_dry: number;
+  mass_t_dry: number; mass_t_wet: number; water_t: number; cost: number;
+  composition_dry: Record<string, number>;
+  measured_oxides: string[];
+  conversion_trace: any;
+}
+
+export interface ReconEvent {
+  id: number; event_id: string; seq: number;
+  kind: 'receipt' | 'reversal' | 'correction';
+  blend_item_id: number; material_id: number; assay_version_id: number;
+  mass_t_wet: number; moisture_pct: number; cost_per_t_wet: number;
+  reverses_event_id?: number | null;
+  reversed_by_event_id?: string | null;
+  assay_snapshot: {
+    assay_version: string; lab_report_no: string; basis: string;
+    moisture_pct: number; dry_factor: number; formula: string;
+    composition_raw: Record<string, number>;
+    composition_dry: Record<string, number>;
+    measured_oxides: string[];
+  };
+  delta: {
+    mass_t_wet: number; mass_t_dry: number; water_t: number; cost: number;
+    components_t: Record<string, number>;
+  };
+  note?: string | null; created_at: string;
+}
+
+export interface ReconAmounts {
+  mass_t_dry: number; mass_t_wet: number; water_t: number; cost: number;
+}
+
+export interface ReconBatchDetail {
+  id: number; batch_code: string; run_id: number; solution_id: number;
+  status: ReconStatus; note?: string | null; created_at: string;
+  plan: {
+    run_id: number; run_code: string; solution_id: number; mode: string;
+    scenario_name: string; batch_t_dry: number;
+    targets: Targets; hazard_limits_pct: Record<string, number>;
+    items: ReconPlanItem[];
+    totals: ReconAmounts;
+    indicators: any; composition_dry_pct: Record<string, number>;
+    hazards: Record<string, number>;
+  };
+  state: {
+    status: ReconStatus; event_count: number; all_closed: boolean;
+    violations_evaluated: boolean;
+    items: {
+      blend_item_id: number; material_code: string; material_name: string;
+      plan: ReconAmounts; actual: ReconAmounts;
+      diff: ReconAmounts; closed: boolean; tol_t: number;
+    }[];
+    totals: { plan: ReconAmounts; actual: ReconAmounts; diff: ReconAmounts };
+    chemistry: {
+      plan_indicators: any; plan_hazards: any;
+      actual_indicators: any; actual_hazards: any;
+      actual_composition_dry_pct: Record<string, number> | null;
+      indicator_diff: any; calc_errors: any[];
+    };
+    violations: { kind: string; actual: number; message: string }[];
+  };
+  events: ReconEvent[];
+}

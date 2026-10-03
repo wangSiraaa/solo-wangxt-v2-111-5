@@ -2,7 +2,8 @@ import { HttpClient } from '@angular/common/http';
 import { Injectable } from '@angular/core';
 import { Observable } from 'rxjs';
 import {
-  BlendRequest, BlendResponse, Material, RunDetail, RunSummary,
+  BlendRequest, BlendResponse, Material,
+  ReconBatchDetail, ReconBatchSummary, RunDetail, RunSummary,
 } from '../models/models';
 
 @Injectable({ providedIn: 'root' })
@@ -34,5 +35,39 @@ export class ApiService {
 
   run(id: number): Observable<RunDetail> {
     return this.http.get<RunDetail>(`${this.base}/runs/${id}`);
+  }
+
+  // ---------------- 对账批次回填账本 ----------------
+
+  createReconBatch(runId: number, solutionId: number): Observable<ReconBatchDetail> {
+    return this.http.post<ReconBatchDetail>(`${this.base}/recon-batches`, {
+      run_id: runId, solution_id: solutionId,
+    });
+  }
+
+  reconBatches(runId?: number): Observable<ReconBatchSummary[]> {
+    return this.http.get<ReconBatchSummary[]>(`${this.base}/recon-batches`, {
+      params: runId != null ? { run_id: runId } : {},
+    });
+  }
+
+  reconBatch(id: number): Observable<ReconBatchDetail> {
+    return this.http.get<ReconBatchDetail>(`${this.base}/recon-batches/${id}`);
+  }
+
+  appendReconEvent(batchId: number, body: {
+    event_id: string; kind: 'receipt' | 'correction';
+    blend_item_id: number; assay_version_id: number; mass_t_wet: number;
+    reverses_event_id?: number | null; note?: string | null;
+  }): Observable<any> {
+    return this.http.post(`${this.base}/recon-batches/${batchId}/events`, body);
+  }
+
+  reverseReconEvent(batchId: number, eventPk: number, eventId: string,
+                    note?: string): Observable<any> {
+    return this.http.post(
+      `${this.base}/recon-batches/${batchId}/events/${eventPk}/reverse`,
+      { event_id: eventId, note: note ?? null },
+    );
   }
 }

@@ -96,3 +96,36 @@ class BlendResponse(BaseModel):
     run_code: str
     status: str
     solutions: list[SolutionOut]
+
+
+# ---------------- 对账批次回填账本 ----------------
+
+class ReconBatchCreate(BaseModel):
+    """从已保存方案创建待对账批次（计划快照随之冻结，不再修改）。"""
+
+    run_id: int
+    solution_id: int
+    note: str | None = None
+
+
+class ReconEventAppend(BaseModel):
+    """追加到料/更正事件。
+
+    event_id 为客户端幂等键：重复回传同一 event_id 只入账一次。
+    assay_version_id 必填——必须显式选择化验版本，禁止默认最新化验单。
+    """
+
+    event_id: str = Field(min_length=1, max_length=64)
+    kind: Literal["receipt", "correction"] = "receipt"
+    blend_item_id: int
+    assay_version_id: int
+    mass_t_wet: float = Field(gt=0)
+    reverses_event_id: int | None = None  # kind=correction 时必填
+    note: str | None = None
+
+
+class ReconReverseRequest(BaseModel):
+    """冲销已登记事件：生成全额反向事件，原事件保留作审计痕迹。"""
+
+    event_id: str = Field(min_length=1, max_length=64)  # 新冲销事件的幂等键
+    note: str | None = None
